@@ -7,29 +7,42 @@ import qrcode
 import time
 import requests
 from app.client.engsel import *
-from app.client.encrypt import API_KEY, build_encrypted_field, decrypt_xdata, encryptsign_xdata, java_like_timestamp, get_x_signature_payment, get_x_signature_bounty
+from app.client.encrypt import API_KEY, decrypt_xdata, encryptsign_xdata, java_like_timestamp, get_x_signature_payment
 from app.type_dict import PaymentItem
 
-def settlement_qris_v2(
+def settlement_qris(
     api_key: str,
     tokens: dict,
     items: list[PaymentItem],
     payment_for: str,
     ask_overwrite: bool,
-    amount_used: str = ""
+    overwrite_amount: int = -1,
+    token_confirmation_idx: int = 0,
+    amount_idx: int = -1,
+    topup_number: str = "",
+    stage_token: str = "",
 ):  
-    token_confirmation = items[0]["token_confirmation"]
+    # Sanity check
+    if overwrite_amount == -1 and not ask_overwrite:
+        print("Either ask_overwrite must be True or overwrite_amount must be set.")
+        return None
+
+    token_confirmation = items[token_confirmation_idx]["token_confirmation"]
     payment_targets = ""
     for item in items:
         if payment_targets != "":
             payment_targets += ";"
         payment_targets += item["item_code"]
+
+    amount_int = 0
     
-    amount_int = items[-1]["item_price"]
-    if amount_used == "first":
-        amount_int = items[0]["item_price"]
-    
-    # Overwrite
+    # Determine amount to use
+    if overwrite_amount != -1:
+        amount_int = overwrite_amount
+    elif amount_idx == -1:
+        amount_int = items[amount_idx]["item_price"]
+
+    # If Overwrite
     if ask_overwrite:
         print(f"Total amount is {amount_int}.\nEnter new amount if you need to overwrite.")
         amount_str = input("Press enter to ignore & use default amount: ")
@@ -47,7 +60,7 @@ def settlement_qris_v2(
     payment_payload = {
         "payment_type": "PURCHASE",
         "is_enterprise": False,
-        "payment_target": items[0]["item_code"],
+        "payment_target": items[token_confirmation_idx]["item_code"],
         "lang": "en",
         "is_referral": False,
         "token_confirmation": token_confirmation
@@ -75,7 +88,8 @@ def settlement_qris_v2(
         "total_discount": 0,
         "coupon": "",
         "payment_for": payment_for,
-        "topup_number": "",
+        "topup_number": topup_number,
+        "stage_token": stage_token,
         "is_enterprise": False,
         "autobuy": {
             "is_using_autobuy": False,
@@ -88,7 +102,23 @@ def settlement_qris_v2(
         },
         "access_token": tokens["access_token"],
         "is_myxl_wallet": False,
-        "additional_data": {},
+        "additional_data": {
+            "original_price": items[0]["item_price"],
+            "is_spend_limit_temporary": False,
+            "migration_type": "",
+            "spend_limit_amount": 0,
+            "is_spend_limit": False,
+            "tax": 0,
+            "benefit_type": "",
+            "quota_bonus": 0,
+            "cashtag": "",
+            "is_family_plan": False,
+            "combo_details": [],
+            "is_switch_plan": False,
+            "discount_recurring": 0,
+            "has_bonus": False,
+            "discount_promo": 0
+        },
         "total_amount": amount_int,
         "total_fee": 0,
         "is_use_point": False,
@@ -120,7 +150,8 @@ def settlement_qris_v2(
             payment_targets,
             token_payment,
             "QRIS",
-            payment_for
+            payment_for,
+            path
         )
     
     headers = {
@@ -134,7 +165,7 @@ def settlement_qris_v2(
         "x-signature": x_sig,
         "x-request-id": str(uuid.uuid4()),
         "x-request-at": java_like_timestamp(x_requested_at),
-        "x-version-app": "8.7.0",
+        "x-version-app": "8.8.0",
     }
     
     url = f"{BASE_API_URL}/{path}"
@@ -176,21 +207,29 @@ def get_qris_code(
     
     return res["data"]["qr_code"]
 
-def show_qris_payment_v2(
+def show_qris_payment(
     api_key: str,
     tokens: dict,
     items: list[PaymentItem],
     payment_for: str,
     ask_overwrite: bool,
-    amount_used: str = ""
+    overwrite_amount: int = -1,
+    token_confirmation_idx: int = 0,
+    amount_idx: int = -1,
+    topup_number: str = "",
+    stage_token: str = "",
 ):  
-    transaction_id = settlement_qris_v2(
+    transaction_id = settlement_qris(
         api_key,
         tokens,
         items,
         payment_for,
         ask_overwrite,
-        amount_used,
+        overwrite_amount,
+        token_confirmation_idx,
+        amount_idx,
+        topup_number,
+        stage_token
     )
     
     if not transaction_id:
@@ -219,4 +258,4 @@ def show_qris_payment_v2(
     
     print(f"Atau buka link berikut untuk melihat QRIS:\n{qris_url}")
     
-    return
+    return qris_b64

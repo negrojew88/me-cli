@@ -1,24 +1,31 @@
-import os, hashlib, requests, brotli, zlib, base64
+import os
+import hashlib
+import requests
+import base64
+
 from random import randint
 from datetime import datetime, timezone, timedelta
+
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from dataclasses import dataclass
 
 API_KEY = os.getenv("API_KEY")
+AES_KEY_ASCII = os.getenv("AES_KEY_ASCII")
+AX_FP_KEY = os.getenv("AX_FP_KEY")
 
-BASE_CRYPTO_URL = "https://crypto.mashu.lol/api/870"
+BASE_CRYPTO_URL = "https://crypto.mashu.lol/api/880"
+# BASE_CRYPTO_URL = "http://127.0.0.1:5000/api/880"  # For local testing
 
 XDATA_DECRYPT_URL = f"{BASE_CRYPTO_URL}/decrypt"
 XDATA_ENCRYPT_SIGN_URL = f"{BASE_CRYPTO_URL}/encryptsign"
 PAYMENT_SIGN_URL = f"{BASE_CRYPTO_URL}/sign-payment"
 BOUNTY_SIGN_URL = f"{BASE_CRYPTO_URL}/sign-bounty"
+BOUNTY_ALLOTMENT_SIGN_URL = f"{BASE_CRYPTO_URL}/sign-bounty-allotment"
+LOYALTY_SIGN_URL = f"{BASE_CRYPTO_URL}/sign-loyalty"
 AX_SIGN_URL = f"{BASE_CRYPTO_URL}/sign-ax"
-
-AES_KEY_ASCII = os.getenv("AES_KEY_ASCII")
-BLOCK = AES.block_size
-
-AX_FP_KEY = os.getenv("AX_FP_KEY")
+CIRCLE_MSISDN_ENCRYPT_URL = f"{BASE_CRYPTO_URL}/encrypt-circle-msisdn"
+CIRCLE_MSISDN_DECRYPT_URL = f"{BASE_CRYPTO_URL}/decrypt-circle-msisdn"
 
 @dataclass
 class DeviceInfo:
@@ -94,17 +101,6 @@ def java_like_timestamp(now: datetime) -> str:
     tz = now.strftime("%z"); tz_colon = tz[:-2] + ":" + tz[-2:] if tz else "+00:00"
     return now.strftime(f"%Y-%m-%dT%H:%M:%S.{ms2}") + tz_colon
 
-def decode_response(response):
-    encoding = response.headers.get("Content-Encoding", "").lower()
-    if encoding == "br":
-        return brotli.decompress(response.content).decode("utf-8")
-    elif encoding == "gzip":
-        return zlib.decompress(response.content, zlib.MAX_WBITS | 16).decode("utf-8")
-    elif encoding == "deflate":
-        return zlib.decompress(response.content).decode("utf-8")
-    else:
-        return response.text
-
 def ts_gmt7_without_colon(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone(timedelta(hours=7)))
@@ -136,6 +132,8 @@ def ax_api_signature(
     response = requests.request("POST", AX_SIGN_URL, json=request_body, headers=headers, timeout=30)
     if response.status_code == 200:
         return response.json().get("ax_signature")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
     else:
         raise Exception(f"Signature generation failed: {response.text}")
     
@@ -162,6 +160,8 @@ def encryptsign_xdata(
     
     if response.status_code == 200:
         return response.json()
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
     else:
         raise Exception(f"Encryption failed: {response.text}")
     
@@ -181,6 +181,8 @@ def decrypt_xdata(
     
     if response.status_code == 200:
         return response.json().get("plaintext")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
     else:
         raise Exception(f"Decryption failed: {response.text}")
 
@@ -191,7 +193,8 @@ def get_x_signature_payment(
         package_code: str,
         token_payment: str,
         payment_method: str,
-        payment_for: str = "BUY_PACKAGE"
+        payment_for: str,
+        path: str,
     ) -> str:
     headers = {
         "Content-Type": "application/json",
@@ -204,13 +207,16 @@ def get_x_signature_payment(
         "package_code": package_code,
         "token_payment": token_payment,
         "payment_method": payment_method,
-        "payment_for": payment_for
+        "payment_for": payment_for,
+        "path": path,
     }
     
     response = requests.request("POST", PAYMENT_SIGN_URL, json=request_body, headers=headers, timeout=30)
     
     if response.status_code == 200:
         return response.json().get("x_signature")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
     else:
         raise Exception(f"Signature generation failed: {response.text}")
     
@@ -236,9 +242,103 @@ def get_x_signature_bounty(
     response = requests.request("POST", BOUNTY_SIGN_URL, json=request_body, headers=headers, timeout=30)
     if response.status_code == 200:
         return response.json().get("x_signature")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
     else:
         raise Exception(f"Signature generation failed: {response.text}")
 
 def ax_device_id() -> str:
     android_id = load_ax_fp() # Actually just b*llsh*tting
     return hashlib.md5(android_id.encode("utf-8")).hexdigest()
+
+def get_x_signature_loyalty(
+        api_key: str,
+        sig_time_sec: int,
+        package_code: str,
+        token_confirmation: str,
+        path: str
+    ) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+    }
+    
+    request_body = {
+        "sig_time_sec": sig_time_sec,
+        "package_code": package_code,
+        "token_confirmation": token_confirmation,
+        "path": path
+    }
+    
+    response = requests.request("POST", LOYALTY_SIGN_URL, json=request_body, headers=headers, timeout=30)
+    if response.status_code == 200:
+        return response.json().get("x_signature")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
+    else:
+        raise Exception(f"Signature generation failed: {response.text}")
+
+def encrypt_circle_msisdn(api_key: str, msisdn: str) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+    }
+    
+    request_body = {
+        "msisdn": msisdn
+    }
+    response = requests.request("POST", CIRCLE_MSISDN_ENCRYPT_URL, json=request_body, headers=headers, timeout=30)
+    
+    if response.status_code == 200:
+        return response.json().get("encrypted_msisdn")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
+    else:
+        raise Exception(f"MSISDN encryption failed: {response.text}")
+    
+def decrypt_circle_msisdn(api_key: str, encrypted_msisdn: str) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+    }
+    
+    request_body = {
+        "encrypted_msisdn": encrypted_msisdn
+    }
+    response = requests.request("POST", CIRCLE_MSISDN_DECRYPT_URL, json=request_body, headers=headers, timeout=30)
+    
+    if response.status_code == 200:
+        return response.json().get("msisdn")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
+    else:
+        raise Exception(f"MSISDN decryption failed: {response.text}")
+
+def get_x_signature_bounty_allotment(
+        api_key: str,
+        sig_time_sec: int,
+        package_code: str,
+        token_confirmation: str,
+        destination_msisdn: str,
+        path: str
+    ) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+    }
+    
+    request_body = {
+        "sig_time_sec": sig_time_sec,
+        "package_code": package_code,
+        "token_confirmation": token_confirmation,
+        "destination_msisdn": destination_msisdn,
+        "path": path
+    }
+    
+    response = requests.request("POST", BOUNTY_ALLOTMENT_SIGN_URL, json=request_body, headers=headers, timeout=30)
+    if response.status_code == 200:
+        return response.json().get("x_signature")
+    elif response.status_code == 402:
+        raise Exception("Insufficient API credit.")
+    else:
+        raise Exception(f"Signature generation failed: {response.text}")

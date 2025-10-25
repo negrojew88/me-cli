@@ -13,3 +13,5 @@ refresh-tokens*
 ax.fp
 bookmark.json
 sentry/
+*.json
+active.number

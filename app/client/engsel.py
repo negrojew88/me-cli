@@ -1,7 +1,22 @@
-import os, json, uuid, requests, time
+import base64
+import os
+import json
+import uuid
+import requests
+from urllib.parse import urlparse
+
 from datetime import datetime, timezone, timedelta
 
-from app.client.encrypt import encryptsign_xdata, java_like_timestamp, ts_gmt7_without_colon, ax_api_signature, decrypt_xdata, API_KEY, get_x_signature_payment, build_encrypted_field, load_ax_fp, ax_device_id
+from app.client.encrypt import (
+    encryptsign_xdata,
+    java_like_timestamp,
+    ts_gmt7_without_colon,
+    ax_api_signature,
+    decrypt_xdata,
+    API_KEY,
+    load_ax_fp,
+    ax_device_id
+)
 
 BASE_API_URL = os.getenv("BASE_API_URL")
 BASE_CIAM_URL = os.getenv("BASE_CIAM_URL")
@@ -22,7 +37,6 @@ def validate_contact(contact: str) -> bool:
     return True
 
 def get_otp(contact: str) -> str:
-    # Contact example: "6287896089467"
     if not validate_contact(contact):
         return None
     
@@ -119,7 +133,7 @@ def submit_otp(api_key: str, contact: str, code: str):
 def get_new_token(refresh_token: str) -> str:
     url = SUBMIT_OTP_URL
 
-    now = datetime.now(timezone(timedelta(hours=7)))  # GMT+7
+    now = datetime.now(timezone(timedelta(hours=7)))
     ax_request_at = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+0700"
     ax_request_id = str(uuid.uuid4())
 
@@ -159,6 +173,74 @@ def get_new_token(refresh_token: str) -> str:
     
     return body
 
+def get_auth_code(tokens: dict, pin: str, msisdn: str):
+    url = BASE_CIAM_URL + "/ciam/auth/authorization-token/generate"
+
+    parsed = urlparse(BASE_CIAM_URL)
+    host_header = parsed.netloc or BASE_CIAM_URL.replace("https://", "")
+
+    now = datetime.now(timezone(timedelta(hours=7)))
+    ax_request_at = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+0700"
+    ax_request_id = str(uuid.uuid4())
+
+    headers = {
+        "Host": host_header,
+        "Ax-Request-At": ax_request_at,
+        "Ax-Device-Id": AX_DEVICE_ID,
+        "Ax-Request-Id": ax_request_id,
+        "Ax-Request-Device": "samsung",
+        "Ax-Request-Device-Model": "SM-N935F",
+        "Ax-Fingerprint": AX_FP,
+        "Authorization": f"Bearer {tokens['access_token']}",
+        "User-Agent": UA,
+        "Ax-Substype": "PREPAID",
+        "Content-Type": "application/json",
+    }
+
+    pin_b64 = base64.b64encode(pin.encode("utf-8")).decode("utf-8")
+
+    body = {
+        "pin": pin_b64,
+        "transaction_type": "SHARE_BALANCE",
+        "receiver_msisdn": msisdn,
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=30)
+    except requests.RequestException as e:
+        print(f"[get_auth_code] Request error: {e}")
+        return None
+
+    # Debug
+    # print(f"[get_auth_code] status={resp.status_code}")
+    # print(f"[get_auth_code] text={resp.text}")
+
+    if resp.status_code != 200:
+        print(f"Failed to get auth code: {resp.status_code} - {resp.text}")
+        return None
+
+    try:
+        data = resp.json()
+    except ValueError:
+        print(f"Invalid JSON response: {resp.text}")
+        return None
+
+    if not isinstance(data, dict):
+        print(f"Unexpected response format: {data!r}")
+        return None
+    
+    status = data.get("status", "")
+    if status != "Success":
+        print(f"Error getting authorization code: {status}")
+        return None
+
+    authorization_code = data.get("data", {}).get("authorization_code")
+    if not authorization_code:
+        print(f"Authorization code not found in response: {data}")
+        return None
+
+    return authorization_code
+
 def send_api_request(
     api_key: str,
     path: str,
@@ -193,7 +275,7 @@ def send_api_request(
         "x-signature": x_sig,
         "x-request-id": str(uuid.uuid4()),
         "x-request-at": java_like_timestamp(now),
-        "x-version-app": "8.7.0",
+        "x-version-app": "8.8.0",
     }
     
     
@@ -217,7 +299,7 @@ def get_profile(api_key: str, access_token: str, id_token: str) -> dict:
 
     raw_payload = {
         "access_token": access_token,
-        "app_version": "8.7.0",
+        "app_version": "8.8.0",
         "is_enterprise": False,
         "lang": "en"
     }
@@ -245,41 +327,8 @@ def get_balance(api_key: str, id_token: str) -> dict:
     else:
         print("Error getting balance:", res.get("error", "Unknown error"))
         return None
-    
-def get_family(
-    api_key: str,
-    tokens: dict,
-    family_code: str,
-    is_enterprise: bool = False,
-    migration_type: str = "NONE"
-) -> dict:
-    print("Fetching package family...")
-    path = "api/v8/xl-stores/options/list"
-    id_token = tokens.get("id_token")
-    payload_dict = {
-        "is_show_tagging_tab": True,
-        "is_dedicated_event": True,
-        "is_transaction_routine": False,
-        "migration_type": migration_type,
-        "package_family_code": family_code,
-        "is_autobuy": False,
-        "is_enterprise": is_enterprise,
-        "is_pdlp": True,
-        "referral_code": "",
-        "is_migration": False,
-        "lang": "en"
-    }
-    
-    res = send_api_request(api_key, path, payload_dict, id_token, "POST")
-    if res.get("status") != "SUCCESS":
-        print(f"Failed to get family {family_code}")
-        print(json.dumps(res, indent=2))
-        input("Press Enter to continue...")
-        return None
-    # print(json.dumps(res, indent=2))
-    return res["data"]
 
-def get_family_v2(
+def get_family(
     api_key: str,
     tokens: dict,
     family_code: str,
@@ -296,7 +345,8 @@ def get_family_v2(
     migration_type_list = [
         "NONE",
         "PRE_TO_PRIOH",
-        "PRIOH_TO_PRIO"
+        "PRIOH_TO_PRIO",
+        "PRIO_TO_PRIOH"
     ]
 
     if is_enterprise is not None:
@@ -304,7 +354,6 @@ def get_family_v2(
 
     if migration_type is not None:
         migration_type_list = [migration_type]
-
 
     path = "api/v8/xl-stores/options/list"
     id_token = tokens.get("id_token")
@@ -319,7 +368,7 @@ def get_family_v2(
             if family_data is not None:
                 break
         
-            print(f"Trying is_enterprise={ie}, migration_type={mt}...")
+            print(f"Trying is_enterprise={ie}, migration_type={mt}.")
 
             payload_dict = {
                 "is_show_tagging_tab": True,
@@ -336,11 +385,9 @@ def get_family_v2(
             }
         
             res = send_api_request(api_key, path, payload_dict, id_token, "POST")
+            # print(f"[get fam 320]:\n{json.dumps(res, indent=2)}")
             if res.get("status") != "SUCCESS":
-                print(f"Failed to get family {family_code}")
-                print(json.dumps(res, indent=2))
-                input("Press Enter to continue...")
-                return None
+                continue
             
             family_name = res["data"]["package_family"].get("name", "")
             if family_name != "":
@@ -451,207 +498,6 @@ def intercept_page(
     else:
         print("Intercept error")
 
-def send_payment_request(
-    api_key: str,
-    payload_dict: dict,
-    access_token: str,
-    id_token: str,
-    token_payment: str,
-    ts_to_sign: int,
-    payment_for: str = "BUY_PACKAGE"
-):
-    path = "payments/api/v8/settlement-balance"
-    package_code = payload_dict["items"][0]["item_code"]
-    
-    encrypted_payload = encryptsign_xdata(
-        api_key=api_key,
-        method="POST",
-        path=path,
-        id_token=id_token,
-        payload=payload_dict
-    )
-    
-    xtime = int(encrypted_payload["encrypted_body"]["xtime"])
-    sig_time_sec = (xtime // 1000)
-    x_requested_at = datetime.fromtimestamp(sig_time_sec, tz=timezone.utc).astimezone()
-    payload_dict["timestamp"] = ts_to_sign
-    
-    body = encrypted_payload["encrypted_body"]
-    
-    x_sig = get_x_signature_payment(
-        api_key,
-        access_token,
-        ts_to_sign,
-        package_code,
-        token_payment,
-        "BALANCE",
-        payment_for
-    )
-    
-    headers = {
-        "host": BASE_API_URL.replace("https://", ""),
-        "content-type": "application/json; charset=utf-8",
-        "user-agent": UA,
-        "x-api-key": API_KEY,
-        "authorization": f"Bearer {id_token}",
-        "x-hv": "v3",
-        "x-signature-time": str(sig_time_sec),
-        "x-signature": x_sig,
-        "x-request-id": str(uuid.uuid4()),
-        "x-request-at": java_like_timestamp(x_requested_at),
-        "x-version-app": "8.7.0",
-    }
-    
-    url = f"{BASE_API_URL}/{path}"
-    resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
-    
-    try:
-        decrypted_body = decrypt_xdata(api_key, json.loads(resp.text))
-        return decrypted_body
-    except Exception as e:
-        print("[decrypt err]", e)
-        return resp.text
-
-def purchase_package(
-    api_key: str,
-    tokens: dict,
-    package_option_code:str,
-    is_enterprise: bool = False
-    ) -> dict:
-    package_details_data = get_package(api_key, tokens, package_option_code)
-    if not package_details_data:
-        print("Failed to get package details for purchase.")
-        return None
-    
-    token_confirmation = package_details_data["token_confirmation"]
-    payment_target = package_details_data["package_option"]["package_option_code"]
-    
-    variant_name = package_details_data["package_detail_variant"].get("name", "")
-    option_name = package_details_data["package_option"].get("name", "")
-    item_name = f"{variant_name} {option_name}".strip()
-    
-    activated_autobuy_code = package_details_data["package_option"]["activated_autobuy_code"]
-    autobuy_threshold_setting = package_details_data["package_option"]["autobuy_threshold_setting"]
-    can_trigger_rating = package_details_data["package_option"]["can_trigger_rating"]
-    payment_for = package_details_data["package_family"]["payment_for"]
-    
-    price = package_details_data["package_option"]["price"]
-    amount_str = input(f"Total amount is {price}.\nEnter value if you need to overwrite, press enter to ignore & use default amount: ")
-    amount_int = price
-    
-    # Intercept, IDK for what purpose
-    intercept_page(api_key, tokens, package_option_code, is_enterprise)
-    
-    if amount_str != "":
-        try:
-            amount_int = int(amount_str)
-        except ValueError:
-            print("Invalid overwrite input, using original price.")
-            return None
-    
-    payment_path = "payments/api/v8/payment-methods-option"
-    payment_payload = {
-        "payment_type": "PURCHASE",
-        "is_enterprise": is_enterprise,
-        "payment_target": payment_target,
-        "lang": "en",
-        "is_referral": False,
-        "token_confirmation": token_confirmation
-    }
-    
-    print("Initiating payment...")
-    payment_res = send_api_request(api_key, payment_path, payment_payload, tokens["id_token"], "POST")
-    if payment_res.get("status") != "SUCCESS":
-        print("Failed to initiate payment")
-        print(json.dumps(payment_res, indent=2))
-        input("Press Enter to continue...")
-        return None
-    
-    token_payment = payment_res["data"]["token_payment"]
-    ts_to_sign = payment_res["data"]["timestamp"]
-    
-    # Overwrite, sometimes the payment_for from package details is empty
-    if payment_for == "":
-        payment_for = "BUY_PACKAGE"
-    
-    # Settlement request
-    settlement_payload = {
-        "total_discount": 0,
-        "is_enterprise": is_enterprise,
-        "payment_token": "",
-        "token_payment": token_payment,
-        "activated_autobuy_code": activated_autobuy_code,
-        "cc_payment_type": "",
-        "is_myxl_wallet": False,
-        "pin": "",
-        "ewallet_promo_id": "",
-        "members": [],
-        "total_fee": 0,
-        "fingerprint": "",
-        "autobuy_threshold_setting": autobuy_threshold_setting,
-        "is_use_point": False,
-        "lang": "en",
-        "payment_method": "BALANCE",
-        "timestamp": int(time.time()),
-        "points_gained": 0,
-        "can_trigger_rating": can_trigger_rating,
-        "akrab_members": [],
-        "akrab_parent_alias": "",
-        "referral_unique_code": "",
-        "coupon": "",
-        "payment_for": payment_for,
-        "with_upsell": False,
-        "topup_number": "",
-        "stage_token": "",
-        "authentication_id": "",
-        "encrypted_payment_token": build_encrypted_field(urlsafe_b64=True),
-        "token": "",
-        "token_confirmation": token_confirmation,
-        "access_token": tokens["access_token"],
-        "wallet_number": "",
-        "encrypted_authentication_id": build_encrypted_field(urlsafe_b64=True),
-        "additional_data": {
-            "original_price": price,
-            "is_spend_limit_temporary": False,
-            "migration_type": "",
-            "akrab_m2m_group_id": "false",
-            "spend_limit_amount": 0,
-            "is_spend_limit": False,
-            "mission_id": "",
-            "tax": 0,
-            # "benefit_type": "NONE",
-            "quota_bonus": 0,
-            "cashtag": "",
-            "is_family_plan": False,
-            "combo_details": [],
-            "is_switch_plan": False,
-            "discount_recurring": 0,
-            "is_akrab_m2m": False,
-            "balance_type": "PREPAID_BALANCE",
-            "has_bonus": False,
-            "discount_promo": 0
-            },
-        "total_amount": amount_int,
-        "is_using_autobuy": False,
-        "items": [
-            {
-                "item_code": payment_target,
-                "product_type": "",
-                "item_price": price,
-                "item_name": item_name,
-                "tax": 0
-            }
-        ]
-    }
-    
-    print("Processing purchase...")
-    # print(f"settlement payload:\n{json.dumps(settlement_payload, indent=2)}")
-    purchase_result = send_payment_request(api_key, settlement_payload, tokens["access_token"], tokens["id_token"], token_payment, ts_to_sign, payment_for)
-    
-    print(f"Purchase result:\n{json.dumps(purchase_result, indent=2)}")
-    
-    input("Press Enter to continue...")
-
 def login_info(
     api_key: str,
     tokens: dict,
@@ -680,10 +526,10 @@ def get_package_details(
     family_code: str,
     variant_code: str,
     option_order: int,
-    is_enterprise: bool,
+    is_enterprise: bool | None = None,
     migration_type: str | None = None
 ) -> dict | None:
-    family_data = get_family_v2(api_key, tokens, family_code, is_enterprise, migration_type)
+    family_data = get_family(api_key, tokens, family_code, is_enterprise, migration_type)
     if not family_data:
         print(f"Gagal mengambil data family untuk {family_code}.")
         return None
@@ -712,3 +558,43 @@ def get_package_details(
         return None
     
     return package_details_data
+
+def get_notifications(
+    api_key: str,
+    tokens: dict,
+):
+    path = "api/v8/notification-non-grouping"
+    
+    raw_payload = {
+        "is_enterprise": False,
+        "lang": "en"
+    }
+    
+    res = send_api_request(api_key, path, raw_payload, tokens["id_token"], "POST")
+    
+    if isinstance(res, dict) and res.get("status") != "SUCCESS":
+        print("Error getting notifications:", res.get("error", "Unknown error"))
+        return None
+        
+    return res
+
+def get_notification_detail(
+    api_key: str,
+    tokens: dict,
+    notification_id: str
+):
+    path = "api/v8/notification/detail"
+    
+    raw_payload = {
+        "is_enterprise": False,
+        "lang": "en",
+        "notification_id": notification_id
+    }
+    
+    res = send_api_request(api_key, path, raw_payload, tokens["id_token"], "POST")
+    
+    if isinstance(res, dict) and res.get("status") != "SUCCESS":
+        print("Error getting notification detail:", res.get("error", "Unknown error"))
+        return None
+
+    return res
