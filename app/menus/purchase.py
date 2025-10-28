@@ -18,8 +18,8 @@ def purchase_by_family(
     tokens: dict = AuthInstance.get_active_tokens() or {}
     
     if use_decoy:
-        # Balance; Decoy XCP
-        url = "https://me.mashu.lol/pg-decoy-xcp.json"
+        # Balance; Decoy B
+        url = "https://me.mashu.lol/pg-decoy-b.json"
         
         response = requests.get(url, timeout=30)
         if response.status_code != 200:
@@ -225,8 +225,8 @@ def purchase_n_times(
     tokens: dict = AuthInstance.get_active_tokens() or {}
     
     if use_decoy:
-        # Balance; Decoy XCP
-        url = "https://me.mashu.lol/pg-decoy-xcp.json"
+        # Balance; Decoy B
+        url = "https://me.mashu.lol/pg-decoy-b.json"
         
         response = requests.get(url, timeout=30)
         if response.status_code != 200:
